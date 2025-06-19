@@ -1,6 +1,5 @@
 /*
-date:2020-08-15
-author:awake1t
+date:2025-06-19
 */
 package main
 
