@@ -14,57 +14,44 @@ import (
 	"time"
 )
 
-func usage() {
-	fmt.Fprintf(os.Stderr, `支持协议FTP/SSH/SMB/MSSQL/MYSQL/POSTGRESQL/MONGOD.
-快速开始: ./PortBruteMac
-`)
-	flag.PrintDefaults()
-}
-
 func main() {
+    ips := flag.String("f", "ip.txt", "要爆破的ip列表")
+    thread := flag.Int("t", 100, "扫描线程")
+    user := flag.String("u", "user.txt", "用户名列表")
+    pass := flag.String("p", "pass.txt", "密码列表")
+    userPass := flag.Bool("up", false, "使用user:pass字典模式")
+    flag.Parse()
 
-	h := flag.Bool("h", false, "帮助")
-	ips := flag.String("f", "ip.txt", "要爆破的ip列表")
-	thread := flag.Int("t", 100, "扫描线程")
-	user := flag.String("u", "user.txt", "用户名字典")
-	pass := flag.String("p", "pass.txt", "密码字典")
-	userPass := flag.Bool("up", false, "使用user:pass字典模式")
+    startTime := time.Now()
+    userDict, _ := common.ReadUserDict(*user)
+    passDict, _ := common.ReadUserDict(*pass)
+    ipList := common.ReadIpList(*ips)
 
-	flag.Parse()
+    color.Cyan("Thread: %d", *thread)
+    color.Cyan("Number of IPs: %d", len(ipList))
+    color.Cyan("Number of username dict: %d", len(userDict))
+    color.Cyan("Number of password dict: %d", len(passDict))
 
-	if *h {
-		usage()
-		return
-	}
+    // 根据模式生成任务通道
+    var taskChan <-chan models.Service
+    if *userPass {
+        taskChan = brute.GenerateTaskUserPass(ipList, userDict)
+    } else {
+        taskChan = brute.GenerateTask(ipList, userDict, passDict)
+    }
 
-	startTime := time.Now()
+    // 启动固定数量的工作协程池
+    var wg sync.WaitGroup
+    for i := 0; i < *thread; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            brute.RunBrute(taskChan)
+        }()
+    }
 
-	userDict, uErr := common.ReadUserDict(*user)
-	passDict, pErr := common.ReadUserDict(*pass)
-
-	ipList := common.ReadIpList(*ips)
-
-	color.Cyan("Thread: %d", *thread)
-	color.Cyan("Number of ip list : %d", len(ipList))
-	color.Cyan("Number of username dict : %d", len(userDict))
-	color.Cyan("Number of password dict : %d", len(passDict))
-
-	if *userPass {
-		userDict, _ := common.ReadUserDict("userpass.txt")
-		scanTasks := brute.GenerateTaskUserPass(ipList, userDict)
-		color.Cyan("Number of all task : %d", len(scanTasks))
-		brute.RunTask(scanTasks, *thread)
-	}else {
-		if uErr == nil && pErr == nil {
-			scanTasks := brute.GenerateTask(ipList, userDict, passDict)
-			color.Cyan("Number of all task : %d", len(scanTasks))
-			brute.RunTask(scanTasks, *thread)
-		} else {
-			fmt.Println("Read File Err!")
-		}
-	}
-
-	endTime := time.Now()
-	color.Red("Run Time is : %s\n", endTime.Sub(startTime))
-
+    // 等待所有扫描协程完成
+    wg.Wait()
+    brute.WriteToFile("\n全部扫描完成\n", "res.txt")
+    color.Red("Run Time: %s\n", time.Since(startTime))
 }
