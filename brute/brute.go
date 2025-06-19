@@ -14,167 +14,107 @@ import (
 	"time"
 )
 
-var (
-	mutex       sync.Mutex
-	successHash map[string]bool
-	bruteResult map[string]models.Service
-)
+var bruteResult map[string]models.Service
 
-func saveRes(target models.Service, h string) {
-	setTaskHask(h)
-	_, ok := bruteResult[h]
-	if !ok {
-		mutex.Lock()
-
-		color.Cyan("[+] %s %d %s %s \n", target.Ip, target.Port, target.UserName, target.PassWord)
-		s := fmt.Sprintf("[+] %s %d %s %s  \n", target.Ip, target.Port, target.UserName, target.PassWord)
-		WriteToFile(s, "res.txt")
-		bruteResult[h] = models.Service{Ip: target.Ip, Port: target.Port, Protocol: target.Protocol, UserName: target.UserName, PassWord: target.PassWord}
-		mutex.Unlock()
-	}
+func saveRes(target models.Service, hash string) {
+    if bruteResult == nil {
+        bruteResult = make(map[string]models.Service)
+    }
+    if _, ok := bruteResult[hash]; !ok {
+        color.Cyan("[+] %s %d %s %s\n", target.Ip, target.Port, target.UserName, target.PassWord)
+        s := fmt.Sprintf("[+] %s %d %s %s\n", target.Ip, target.Port, target.UserName, target.PassWord)
+        WriteToFile(s, "res.txt")
+        bruteResult[hash] = target
+    }
 }
 
-// 消费者 每个协程都从生产者的channel中读取数据后，开启扫描
-func runBrute(taskChan chan models.Service, wg *sync.WaitGroup) {
-	for target := range taskChan {
-
-		protocol := strings.ToUpper(target.Protocol)
-
-		var k string
-		if protocol == "REDIS" || protocol == "FTP" || protocol == "SNMP" || protocol == "POSTGRESQL" || protocol == "SSH" {
-			k = fmt.Sprintf("%v-%v-%v", target.Ip, target.Port, target.Protocol)
-		} else {
-			k = fmt.Sprintf("%v-%v-%v", target.Ip, target.Port, target.UserName)
-		}
-
-		// 生成唯一hask
-		h := common.MakeTaskHash(k)
-		if checkTashHash(h) {
-			wg.Done()
-			continue
-		}
-		//fmt.Fprintf(os.Stdout, "Now is %s %s %s\r", target.Ip,target.UserName, target.PassWord)
-		err, res := plugins.ScanFuncMap[protocol](target.Ip, strconv.Itoa(target.Port), target.UserName, target.PassWord)
-		if err == nil && res == true {
-			saveRes(target, h)
-		} else {
-			//fmt.Println("插件爆破时错误:", err)
-		}
-		wg.Done()
-	}
-
+// RunBrute 从任务通道中读取任务并执行爆破
+func RunBrute(taskChan <-chan models.Service) {
+    for target := range taskChan {
+        protocol := strings.ToUpper(target.Protocol)
+        var key string
+        if protocol == "REDIS" || protocol == "FTP" || protocol == "SNMP" ||
+            protocol == "POSTGRESQL" || protocol == "SSH" {
+            key = fmt.Sprintf("%v-%v-%v", target.Ip, target.Port, target.Protocol)
+        } else {
+            key = fmt.Sprintf("%v-%v-%v", target.Ip, target.Port, target.UserName)
+        }
+        h := common.MakeTaskHash(key)
+        if _, ok := bruteResult[h]; ok {
+            continue
+        }
+        err, success := plugins.ScanFuncMap[protocol](
+            target.Ip, strconv.Itoa(target.Port),
+            target.UserName, target.PassWord)
+        if err == nil && success {
+            saveRes(target, h)
+        }
+    }
 }
 
-func RunTask(scanTasks []models.Service, thread int) {
-
-	wg := &sync.WaitGroup{}
-	successHash = make(map[string]bool)
-	bruteResult = make(map[string]models.Service)
-
-	// 创建一个buffer为thread * 2的channel
-	taskChan := make(chan models.Service, thread*2)
-
-	// 创建Thread个协程
-	for i := 0; i < thread; i++ {
-		go runBrute(taskChan, wg)
-
-	}
-
-	// 生产者，不断的把生产要扫描的数据，存放到 channel，直到channel阻塞
-	bar := pb.StartNew(len(scanTasks))
-
-	for _, task := range scanTasks {
-		wg.Add(1)
-		taskChan <- task
-		bar.Increment()
-  	}
-	//bar.Increment()
-
-	// 生产完成后，从生产方关闭task
-	close(taskChan)
-
-	bar.Finish()
-
-	wg.Wait()
-	waitTimeout(wg, 3*time.Second)
-
-	WriteToFile("\n全部扫描完成\n", "res.txt")
-
-	color.Red("Scan complete. %d vulnerabilities found! \n", len(bruteResult))
-
-	for _,v := range bruteResult{
-		color.Cyan("[+] %s %d %s %s \n",v.Ip,v.Port,v.UserName,v.PassWord)
-	}
-
-
-
-
+// GenerateTaskUserPass 使用 user:pass 列表生成任务通道
+func GenerateTaskUserPass(addr []models.IpAddr, userList []string) <-chan models.Service {
+    taskChan := make(chan models.Service, 100)
+    go func() {
+        defer close(taskChan)
+        for _, up := range userList {
+            parts := strings.Split(up, ":")
+            if len(parts) != 2 {
+                continue
+            }
+            user := parts[0]; pass := parts[1]
+            for _, ip := range addr {
+                taskChan <- models.Service{
+                    Ip:       ip.Ip,
+                    Port:     ip.Port,
+                    Protocol: ip.Protocol,
+                    UserName: user,
+                    PassWord: pass,
+                }
+            }
+        }
+    }()
+    return taskChan
 }
 
-func WriteToFile(wireteString, filename string) {
-
-	fd, _ := os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-	buf := []byte(wireteString)
-	fd.Write(buf)
-
+// GenerateTask 使用用户名、密码列表生成任务通道（并包含空密码尝试）
+func GenerateTask(addr []models.IpAddr, userList []string, passList []string) <-chan models.Service {
+    taskChan := make(chan models.Service, 100)
+    go func() {
+        defer close(taskChan)
+        // 针对部分协议尝试空凭证
+        for _, ip := range addr {
+            if ip.Protocol == "REDIS" || ip.Protocol == "FTP" ||
+               ip.Protocol == "POSTGRESQL" || ip.Protocol == "SSH" {
+                taskChan <- models.Service{
+                    Ip:       ip.Ip,
+                    Port:     ip.Port,
+                    Protocol: ip.Protocol,
+                    UserName: "",
+                    PassWord: "",
+                }
+            }
+        }
+        // 普通的用户密码组合
+        for _, user := range userList {
+            for _, pass := range passList {
+                for _, ip := range addr {
+                    taskChan <- models.Service{
+                        Ip:       ip.Ip,
+                        Port:     ip.Port,
+                        Protocol: ip.Protocol,
+                        UserName: user,
+                        PassWord: pass,
+                    }
+                }
+            }
+        }
+    }()
+    return taskChan
 }
 
-func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
-	c := make(chan struct{})
-	go func() {
-		defer close(c)
-		wg.Wait()
-	}()
-	select {
-	case <-c:
-		return false // completed normally
-	case <-time.After(timeout):
-		return true // 超时未响应
-	}
-}
-
-func GenerateTaskUserPass(addr []models.IpAddr, userList []string) (scanTasks []models.Service) {
-	for _, u := range userList {
-		uk := strings.Split(u, ":")
-		for _, ip := range addr {
-			scanTask := models.Service{Ip: ip.Ip, Port: ip.Port, Protocol: ip.Protocol, UserName: uk[0], PassWord: uk[1]}
-			scanTasks = append(scanTasks, scanTask)
-		}
-	}
-	return
-}
-
-func GenerateTask(addr []models.IpAddr, userList []string, passList []string) (scanTasks []models.Service) {
-	//每个都生成一个空的账号密码，用于爆破空账号密码
-	scanTasks = make([]models.Service, 0)
-	for _, ip := range addr {
-		if ip.Protocol == "REDIS" || ip.Protocol == "FTP" || ip.Protocol == "POSTGRESQL" || ip.Protocol == "SSH" {
-			scanTask := models.Service{Ip: ip.Ip, Port: ip.Port, Protocol: ip.Protocol, UserName: "", PassWord: ""}
-			scanTasks = append(scanTasks, scanTask)
-		}
-	}
-
-	for _, u := range userList {
-		for _, p := range passList {
-			for _, ip := range addr {
-				scanTask := models.Service{Ip: ip.Ip, Port: ip.Port, Protocol: ip.Protocol, UserName: u, PassWord: p}
-				scanTasks = append(scanTasks, scanTask)
-			}
-		}
-	}
-
-	return
-}
-
-// 标记特定服务的特定用户是否破解成功，成功的话不再尝试破解该用户
-//SuccessHash map[string]bool hash唯一
-func checkTashHash(hash string) bool {
-	_, ok := successHash[hash]
-	return ok
-}
-
-func setTaskHask(hash string) () {
-	mutex.Lock()
-	successHash[hash] = true
-	mutex.Unlock()
+// WriteToFile 将结果追加到文件
+func WriteToFile(content, filename string) {
+    fd, _ := os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+    fd.Write([]byte(content))
 }
