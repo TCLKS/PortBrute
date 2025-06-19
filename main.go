@@ -7,10 +7,10 @@ package main
 import (
 	"PortBrute/brute"
 	"PortBrute/common"
+	"PortBrute/models"
 	"flag"
-	"fmt"
 	"github.com/fatih/color"
-	"os"
+	"sync"
 	"time"
 )
 
