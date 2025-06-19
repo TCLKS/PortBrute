@@ -2,6 +2,10 @@
 （20250619重构版，旨在提升大量数据爆破时内存报错问题）
 > 一款跨平台小巧的端口爆破工具，支持爆破FTP/SSH/SMB/MSSQL/MYSQL/POSTGRESQL/MONGOD。 
 
+### 特此鸣谢原作者
+
+> https://github.com/awake1t
+可以看看awake1t大佬的主页支持一下
 ### 使用说明
 
 > ​	ip.txt中放入需要爆破的ip+端口，比如 `10.10.10.10:3306`。  如果不是标准端口，比如3307是MYSQL。写成 `10.10.10.10:3307|MYSQL`。 其他`FTP/SSH/SMB/MSSQL/MYSQL/POSTGRESQL/MONGOD`同理
