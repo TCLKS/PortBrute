@@ -9,9 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
-	"github.com/cheggaaa/pb/v3"
-	"time"
 )
 
 var bruteResult map[string]models.Service
